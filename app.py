@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import sys
 from datetime import datetime, timezone
 from functools import wraps
 from typing import Any
@@ -30,7 +31,7 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 APP_SECRET = os.getenv("APP_SECRET", "").strip() or secrets.token_hex(32)
-HOST = os.getenv("HOST", "127.0.0.1")
+HOST = os.getenv("HOST", "0.0.0.0")  # Changé: 0.0.0.0 pour Render
 PORT = int(os.getenv("PORT", "5000"))
 DEBUG = os.getenv("DEBUG", "false").strip().lower() == "true"
 TOKEN_TTL_SECONDS = int(os.getenv("TOKEN_TTL_SECONDS", "604800"))
@@ -359,29 +360,41 @@ def enrich_invoice(invoice: dict[str, Any], patient_map: dict[int, dict[str, Any
 
 
 def seed_default_admin() -> None:
-    admins = query_table(USERS_TABLE, filters={"role": "super_admin"}, limit=1)
-    if admins:
-        return
-    if not SUPER_ADMIN_EMAIL or not SUPER_ADMIN_PASSWORD:
-        print("Aucun super administrateur detecte. Definissez SUPER_ADMIN_EMAIL et SUPER_ADMIN_PASSWORD dans .env.")
-        return
+    """Seed super admin sans bloquer le démarrage en cas d'erreur."""
+    try:
+        admins = query_table(USERS_TABLE, filters={"role": "super_admin"}, limit=1)
+        if admins:
+            return
+        
+        if not SUPER_ADMIN_EMAIL or not SUPER_ADMIN_PASSWORD:
+            # Pas d'erreur, juste un log silencieux en prod
+            if DEBUG:
+                print("Aucun super administrateur detecte. Definissez SUPER_ADMIN_EMAIL et SUPER_ADMIN_PASSWORD dans .env.")
+            return
 
-    admin = insert_row(
-        USERS_TABLE,
-        {
-            "name": SUPER_ADMIN_NAME,
-            "email": SUPER_ADMIN_EMAIL,
-            "password_hash": generate_password_hash(SUPER_ADMIN_PASSWORD),
-            "role": "super_admin",
-            "is_active": True,
-            "created_at": now_iso(),
-            "updated_at": now_iso(),
-        },
-    )
-    add_audit("SEED", "user", admin, "Compte super administrateur cree automatiquement", admin["id"])
-    print(f"Super administrateur initialise: {SUPER_ADMIN_EMAIL}")
+        admin = insert_row(
+            USERS_TABLE,
+            {
+                "name": SUPER_ADMIN_NAME,
+                "email": SUPER_ADMIN_EMAIL,
+                "password_hash": generate_password_hash(SUPER_ADMIN_PASSWORD),
+                "role": "super_admin",
+                "is_active": True,
+                "created_at": now_iso(),
+                "updated_at": now_iso(),
+            },
+        )
+        add_audit("SEED", "user", admin, "Compte super administrateur cree automatiquement", admin["id"])
+        if DEBUG:
+            print(f"Super administrateur initialise: {SUPER_ADMIN_EMAIL}")
+    except Exception as e:
+        # Ne pas bloquer le démarrage en production
+        if DEBUG:
+            print(f"Erreur seed super admin: {e}")
+        pass
 
 
+# Routes API
 @app.route("/api/health", methods=["GET"])
 def health():
     return jsonify(
@@ -941,7 +954,12 @@ def get_audit_logs():
     return jsonify(logs)
 
 
+# Point d'entrée pour gunicorn (Render)
+# L'application 'app' est déjà définie ci-dessus
+
 if __name__ == "__main__":
+    # Exécution uniquement en développement (python app.py)
+    # En production, gunicorn utilise l'objet 'app' directement
     seed_default_admin()
     print("USHUDa Hospital API - Supabase")
     print(f"API: http://{HOST}:{PORT}/api")
